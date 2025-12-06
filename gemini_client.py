@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Muat variabel dari file .env
+# === Muat variabel dari .env ===
 load_dotenv()
 
 # Ambil API Key
@@ -14,48 +14,84 @@ if not GEMINI_API_KEY:
 # Konfigurasi Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Pilih model Gemini (default: Gemini 2.5 Flash)
+# Pilih model (default: Gemini 2.5 Flash)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash")
 
-def generate_with_gemini(prompt: str, max_tokens: int = 1024, temperature: float = 0.2) -> str:
+# === Fungsi utama ===
+def generate_with_gemini(prompt: str, max_tokens: int = 512, temperature: float = 0.2) -> str:
     """
-    Mengirim prompt ke Gemini API dengan fallback aman untuk berbagai struktur respons.
-    Cocok untuk RAG pipeline (panjang konteks + jawaban ringkas & relevan).
+    Mengirim prompt ke Gemini API dan mengembalikan teks hasilnya.
+    Didesain untuk menangani safety blocks (finish_reason: 2) 
+    tanpa crash, dengan tidak pernah mengakses response.text.
     """
     try:
         model = genai.GenerativeModel(GEMINI_MODEL)
+
+        safety_settings = [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        ]
+
+        # Generate content
         response = model.generate_content(
-            [prompt],
+            prompt,
             generation_config={
                 "temperature": temperature,
                 "max_output_tokens": max_tokens,
-                "top_p": 0.9,
-                "top_k": 40,
             },
-            safety_settings=None,  # hindari false-positive block
+            safety_settings=safety_settings,
         )
 
-        # 1️⃣ Ambil hasil utama
-        if hasattr(response, "text") and response.text:
-            return response.text.strip()
+        # === PARSING SUPER AMAN ===
+        # JANGAN PERNAH gunakan response.text, itu adalah "perangkap".
+        # Langsung periksa candidates.
 
-        # 2️⃣ Fallback: ambil dari candidates/parts
-        if hasattr(response, "candidates") and response.candidates:
-            for cand in response.candidates:
-                if cand.content and hasattr(cand.content, "parts"):
-                    for part in cand.content.parts:
-                        if part.text and part.text.strip():
-                            return part.text.strip()
+        if not response.candidates:
+            # Jika tidak ada kandidat sama sekali
+            return "(Model tidak memberikan respons kandidat.)"
 
-        # 3️⃣ Fallback terakhir jika semua kosong
-        return "(Tidak ada respons teks yang valid dari Gemini)"
+        # Ambil kandidat pertama (biasanya hanya ada satu)
+        candidate = response.candidates[0]
+
+        # Periksa finish_reason SEBELUM mencoba mengambil teks
+        if candidate.finish_reason == 2: # 2 = SAFETY
+            print("⚠️ Respons diblokir oleh sistem keamanan Gemini (finish_reason=2).")
+            return "(Tidak ada teks yang dihasilkan — diblokir oleh sistem keamanan Gemini.)"
+        
+        if candidate.finish_reason == 3: # 3 = RECITATION
+            print("⚠️ Respons diblokir karena sitasi (finish_reason=3).")
+            return "(Tidak ada teks yang dihasilkan — diblokir karena sitasi.)"
+
+        if candidate.finish_reason != 1: # 1 = STOP
+            print(f"⚠️ Respons berhenti dengan alasan tidak terduga: {candidate.finish_reason}")
+            return f"(Respons berhenti dengan alasan: {candidate.finish_reason})"
+
+        # --- Jika kita sampai di sini, berarti finish_reason == 1 (STOP) dan aman ---
+        
+        if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+            texts = []
+            for part in candidate.content.parts:
+                if hasattr(part, 'text') and part.text:
+                    texts.append(part.text)
+            
+            if texts:
+                return "\n".join(texts).strip()
+            else:
+                # Seharusnya tidak terjadi jika finish_reason=1, tapi untuk jaga-jaga
+                return "(Respons berhasil namun tidak mengandung teks.)"
+        
+        # Fallback jika struktur tidak dikenali
+        return "(Struktur respons valid tetapi tidak dapat diekstrak teksnya.)"
 
     except Exception as e:
-        # Tangani error generik dan log
+        # Ini akan menangkap error lain, tapi SEHARUSNYA tidak lagi menangkap
+        # error 'Invalid operation' karena kita tidak lagi memakai response.text
         print(f"[Gemini Error] {e}")
-        if "429" in str(e):
-            return "(Server Gemini membatasi permintaan sementara. Coba lagi nanti.)"
-        elif "safety" in str(e).lower():
-            return "(Jawaban diblokir oleh sistem keamanan model.)"
-        else:
-            return f"(Terjadi kesalahan: {e})"
+        
+        # Kita cek secara spesifik apakah ini error yg kita hindari
+        if "Invalid operation" in str(e):
+             return "(Terjadi kesalahan kritis: 'Invalid operation' masih terpicu.)"
+             
+        return f"(Terjadi kesalahan pada Gemini Client: {e})"
