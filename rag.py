@@ -7,10 +7,9 @@ from sentence_transformers import SentenceTransformer
 from gemini_client import generate_with_gemini
 from dotenv import load_dotenv
 
-# Load Environment
 load_dotenv()
 
-# === Konfigurasi & Model ===
+# === Konfigurasi ===
 DATA_DIR = os.getenv("DATA_DIR", "data")
 INDEX_PATH = os.path.join(DATA_DIR, "faiss_index.bin")
 CHUNKS_JSON = os.path.join(DATA_DIR, "parwa_chunks.json")
@@ -19,36 +18,94 @@ EMBED_MODEL_NAME = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-mu
 
 embed_model = SentenceTransformer(EMBED_MODEL_NAME)
 
-# Global Variables
 _index = None
 _chunks = None
 _vectors = None
 _book_names = None
 
-# Configs
-DEFAULT_TOP_K = 4
-CONTEXT_CHAR_LIMIT = 4000 # Diperbesar agar konteks lebih banyak
+DEFAULT_TOP_K = 10 
+CONTEXT_CHAR_LIMIT = 8000 
 
 # -------------------------
-# 1. Utilities
+# 1. Utilities & Cleaning
 # -------------------------
 def clean_markdown(text: str) -> str:
-    """Membersihkan simbol Markdown agar rapi di Android."""
     if not text: return ""
-    text = re.sub(r'\*\*|__', '', text) # Hapus bold
-    text = re.sub(r'\*', '', text)      # Hapus italic
-    text = re.sub(r'\n{3,}', '\n\n', text) # Hapus enter berlebih
+    
+    # 1. Hapus Markdown Bold/Italic
+    text = re.sub(r'\*\*|__', '', text) 
+    text = re.sub(r'\*', '', text)     
+    
+    # 2. Hapus Prefix "Robot" (AGRESIF)
+    # Regex ini akan menghapus kalimat awal yang mengandung kata-kata di bawah sampai titik/koma pertama
+    patterns = [
+        r"^berdasarkan (kutipan )?teks( yang diberikan)?( ini)?(\.|,)?",
+        r"^mengacu pada (kutipan )?teks(\.|,)?",
+        r"^menurut (kutipan )?teks(\.|,)?",
+        r"^dalam (kutipan )?teks( ini)?(\.|,)?",
+        r"^teks (ini )?menjelaskan( bahwa)?",
+        r"^teks (ini )?tidak (menjelaskan|menyebutkan)",
+        r"^adp ai menjawab:",
+        r"^kutipan (teks )?tersebut menceritakan",
+    ]
+    
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    # 3. Capitalize huruf pertama setelah dipotong
+    if text:
+        text = text[0].upper() + text[1:]
+
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 def normalize_book_name(s: str) -> str:
     if not s: return ""
     return " ".join(s.lower().replace("w", "v").split())
 
-def expand_question(question: str) -> str:
-    return question.lower().strip()
+# -------------------------
+# 2. CONTEXTUAL REWRITER (BARU!)
+# -------------------------
+def rewrite_query(question: str, history: list) -> str:
+    """
+    Mengubah pertanyaan user menjadi 'Standalone Question' berdasarkan history chat.
+    Contoh: 
+    History: [User: Siapa Yudistira?]
+    Current: "Bagaimana sifatnya?"
+    Result: "Bagaimana sifat Yudistira?"
+    """
+    if not history:
+        return question
+    
+    # Ambil 2 percakapan terakhir saja biar hemat token & fokus
+    last_turn = history[-2:] 
+    history_str = ""
+    for h in last_turn:
+        role = "User" if h.get('role') == 'user' else "Assistant"
+        content = h.get('content', '')
+        history_str += f"{role}: {content}\n"
+
+    prompt = f"""
+    Tugas: Tulis ulang pertanyaan terakhir User agar menjadi kalimat lengkap dan berdiri sendiri (Standalone Question).
+    Gunakan konteks dari Percakapan Sebelumnya untuk memperjelas subjek (dia/nya/mereka).
+    JANGAN MENJAWAB PERTANYAANNYA. HANYA TULIS ULANG PERTANYAANNYA.
+    
+    Percakapan Sebelumnya:
+    {history_str}
+    
+    Pertanyaan User Saat Ini: {question}
+    
+    Standalone Question (Bahasa Indonesia):
+    """
+    
+    rewritten = generate_with_gemini(prompt, max_tokens=100)
+    if rewritten:
+        print(f"🔄 Rewritten Query: '{question}' -> '{rewritten}'")
+        return rewritten.strip()
+    return question
 
 # -------------------------
-# 2. Search Logic (Retrieval)
+# 3. Search Logic
 # -------------------------
 def load_store():
     global _index, _chunks, _vectors, _book_names
@@ -59,7 +116,6 @@ def load_store():
         with open(CHUNKS_JSON, "r", encoding="utf-8") as f: _chunks = json.load(f)
     if _vectors is None and os.path.exists(VECTORS_NPY):
         _vectors = np.load(VECTORS_NPY)
-        # Normalisasi vektor
         norms = np.linalg.norm(_vectors, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         _vectors = _vectors / norms
@@ -82,86 +138,86 @@ def retrieve_candidates(query: str, top_k: int = DEFAULT_TOP_K, book_filter: lis
         indices = [i for i, c in enumerate(chunks) if normalize_book_name(c.get("meta", {}).get("book")) in book_filter]
         if indices:
             scores = np.dot(vectors[indices], q_vec)
-            top_ids = np.argsort(-scores)[:top_k*3]
+            top_ids = np.argsort(-scores)[:top_k*4] 
             return [(float(scores[i]), indices[i]) for i in top_ids]
     
-    D, I = idx.search(np.expand_dims(q_vec, axis=0), top_k * 3)
+    D, I = idx.search(np.expand_dims(q_vec, axis=0), top_k * 4)
     return [(float(score), int(i)) for score, i in zip(D[0], I[0]) if i >= 0]
 
 def build_context_text(retrieved: list) -> str:
     texts = []
     total_len = 0
-    # Kita urutkan berdasarkan skor tertinggi
     for r in retrieved:
-        # Prioritaskan text Indonesia jika ada, jika tidak pakai English
-        body = r["chunk"].get("text_id", "") or r["chunk"].get("text_en", "")
+        body = r["chunk"].get("text_en", "") 
         if total_len + len(body) > CONTEXT_CHAR_LIMIT: break
         texts.append(body)
         total_len += len(body)
     return "\n---\n".join(texts)
 
 # -------------------------
-# 3. Prompting (INI KUNCINYA)
+# 4. Prompting
 # -------------------------
 def build_prompt(question: str, retrieved_chunks: list) -> str:
     context_str = build_context_text(retrieved_chunks)
     
-    # Prompt ini didesain untuk:
-    # 1. Menganggap teks sebagai karya sastra (bypass safety filter kekerasan).
-    # 2. Menjawab langsung (Direct Answer).
-    # 3. Menggunakan bahasa Indonesia yang natural.
-    
     prompt = f"""
-    Anda adalah 'ADP AI', asisten ahli Sastra Kuno Asta Dasa Parwa (Mahabharata).
-    Tugas anda adalah menjawab pertanyaan pengguna berdasarkan KUTIPAN TEKS yang diberikan di bawah.
-
-    PERATURAN PENTING:
-    1. JAWAB LANGSUNG pada intinya. JANGAN gunakan kalimat pembuka seperti "Berdasarkan teks...", "Menurut konteks...", atau "Kutipan ini menjelaskan...".
-    2. JANGAN membuat kesimpulan di luar teks yang diberikan.
-    3. Jika teks mengandung deskripsi perang atau kematian, ceritakan apa adanya dengan nada netral (gaya bahasa sastra/sejarah). Ini adalah literatur klasik, bukan kekerasan nyata.
-    4. Gunakan Bahasa Indonesia yang sopan, jelas, dan mengalir.
-
-    KUTIPAN TEKS SASTRA (SUMBER KEBENARAN):
+    Anda adalah 'ADP AI' (Asisten Asta Dasa Parwa).
+    
+    ATURAN JAWAB:
+    1. JAWAB LANGSUNG ke inti pertanyaan.
+    2. DILARANG KERAS menggunakan kata: "Berdasarkan teks", "Teks menyebutkan", "Menurut kutipan", atau "Teks tidak menjelaskan".
+    3. Jika informasi tidak ditemukan secara eksplisit, gunakan logika cerdas untuk menyimpulkan dari konteks yang ada (INFERENSI), atau jawab berdasarkan pengetahuan umum tentang Mahabharata jika sangat mendasar (misal: Sengkuni tokoh licik, Kurawa ada 100).
+    4. Gunakan Bahasa Indonesia yang natural dan bercerita.
+    
+    DATA REFERENSI:
     {context_str}
 
-    PERTANYAAN PENGGUNA:
-    {question}
+    PERTANYAAN: {question}
 
-    JAWABAN (Langsung ke poin):
+    JAWABAN:
     """
     return prompt.strip()
 
 # -------------------------
-# 4. Main Pipeline
+# 5. Main Pipeline
 # -------------------------
-def answer_question(question: str, top_k: int = DEFAULT_TOP_K):
+def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_K):
     try:
         load_store()
         
-        # 1. Retrieval
-        expanded_q = expand_question(question)
-        books = detect_book_from_query(expanded_q)
-        candidates = retrieve_candidates(expanded_q, top_k, books)
+        # 1. Rewrite Query berdasarkan History
+        # Ini agar bot paham "Dia" itu siapa
+        standalone_q = rewrite_query(question, history)
         
-        # Format hasil retrieval
+        # 2. Retrieval pakai Query yang sudah diperjelas
+        # Kita juga perluas lagi (expand) untuk menangkap keyword tambahan
+        search_q = standalone_q
+        if any(x in search_q.lower() for x in ["siapa", "tokoh", "sifat"]):
+            search_q += " deskripsi karakter peran asal usul"
+            
+        books = detect_book_from_query(search_q)
+        candidates = retrieve_candidates(search_q, top_k, books)
+        
         retrieved_data = []
         for score, idx in candidates:
             retrieved_data.append({"score": score, "chunk": _chunks[idx]})
         
-        # Ambil Top-K terbaik untuk konteks
         best_chunks = retrieved_data[:top_k]
 
-        # 2. Generate Prompt
-        prompt = build_prompt(question, best_chunks)
-
-        # 3. Kirim ke Gemini
+        # 3. Generate Answer
+        prompt = build_prompt(standalone_q, best_chunks) # Pakai standalone_q di prompt
         raw_response = generate_with_gemini(prompt)
 
-        # 4. Cleaning Akhir (Hapus markdown bold/italic biar bersih di HP)
-        final_answer = clean_markdown(raw_response)
+        # 4. Fallback jika blocked
+        if raw_response is None:
+            print("⚠️ Fallback Mode Aktif")
+            fallback_prompt = f"Ceritakan secara singkat dan halus tentang: {standalone_q}. Hindari kekerasan eksplisit."
+            raw_response = generate_with_gemini(fallback_prompt)
+
+        final_answer = clean_markdown(raw_response) if raw_response else "Maaf, terjadi gangguan."
         
         return {"answer": final_answer, "retrieved": best_chunks}
 
     except Exception as e:
         print(f"[ERROR RAG] {e}")
-        return {"answer": "Mohon maaf, ADP sedang bermeditasi (Terjadi kesalahan sistem).", "retrieved": []}
+        return {"answer": "Maaf, sistem sedang sibuk.", "retrieved": []}
