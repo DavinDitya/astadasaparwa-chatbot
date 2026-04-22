@@ -1,9 +1,11 @@
+# rag.py
 import os
 import json
 import re
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
+from google import genai
+from google.genai import types
 from gemini_client import generate_with_gemini
 from dotenv import load_dotenv
 
@@ -14,9 +16,11 @@ DATA_DIR = os.getenv("DATA_DIR", "data")
 INDEX_PATH = os.path.join(DATA_DIR, "faiss_index.bin")
 CHUNKS_JSON = os.path.join(DATA_DIR, "parwa_chunks.json")
 VECTORS_NPY = os.path.join(DATA_DIR, "parwa_vectors.npy")
-EMBED_MODEL_NAME = os.getenv("EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
-embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+# Konfigurasi Gemini API Baru
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY)
+EMBED_MODEL_NAME = "gemini-embedding-001"
 
 _index = None
 _chunks = None
@@ -37,7 +41,6 @@ def clean_markdown(text: str) -> str:
     text = re.sub(r'\*', '', text)     
     
     # 2. Hapus Prefix "Robot" (AGRESIF)
-    # Regex ini akan menghapus kalimat awal yang mengandung kata-kata di bawah sampai titik/koma pertama
     patterns = [
         r"^berdasarkan (kutipan )?teks( yang diberikan)?( ini)?(\.|,)?",
         r"^mengacu pada (kutipan )?teks(\.|,)?",
@@ -64,20 +67,12 @@ def normalize_book_name(s: str) -> str:
     return " ".join(s.lower().replace("w", "v").split())
 
 # -------------------------
-# 2. CONTEXTUAL REWRITER (BARU!)
+# 2. CONTEXTUAL REWRITER
 # -------------------------
 def rewrite_query(question: str, history: list) -> str:
-    """
-    Mengubah pertanyaan user menjadi 'Standalone Question' berdasarkan history chat.
-    Contoh: 
-    History: [User: Siapa Yudistira?]
-    Current: "Bagaimana sifatnya?"
-    Result: "Bagaimana sifat Yudistira?"
-    """
     if not history:
         return question
     
-    # Ambil 2 percakapan terakhir saja biar hemat token & fokus
     last_turn = history[-2:] 
     history_str = ""
     for h in last_turn:
@@ -131,17 +126,27 @@ def detect_book_from_query(q: str) -> list:
 
 def retrieve_candidates(query: str, top_k: int = DEFAULT_TOP_K, book_filter: list = None):
     idx, chunks, vectors = _index, _chunks, _vectors
-    q_vec = embed_model.encode(query, convert_to_numpy=True)
-    q_vec = q_vec / np.linalg.norm(q_vec)
+    
+    # 1. Konversi pertanyaan menjadi Vektor menggunakan Gemini
+    response = client.models.embed_content(
+        model=EMBED_MODEL_NAME,
+        contents=query,
+        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
+    )
+    
+    # 2. Ambil nilai angka dan normalisasi
+    q_vec = np.array([response.embeddings[0].values], dtype=np.float32)
+    q_vec = q_vec / np.linalg.norm(q_vec, axis=1, keepdims=True)
 
+    # 3. Proses pencarian kesamaan (Dot Product)
     if book_filter and vectors is not None:
         indices = [i for i, c in enumerate(chunks) if normalize_book_name(c.get("meta", {}).get("book")) in book_filter]
         if indices:
-            scores = np.dot(vectors[indices], q_vec)
+            scores = np.dot(vectors[indices], q_vec[0])
             top_ids = np.argsort(-scores)[:top_k*4] 
             return [(float(scores[i]), indices[i]) for i in top_ids]
     
-    D, I = idx.search(np.expand_dims(q_vec, axis=0), top_k * 4)
+    D, I = idx.search(q_vec, top_k * 4)
     return [(float(score), int(i)) for score, i in zip(D[0], I[0]) if i >= 0]
 
 def build_context_text(retrieved: list) -> str:
@@ -186,11 +191,9 @@ def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_
         load_store()
         
         # 1. Rewrite Query berdasarkan History
-        # Ini agar bot paham "Dia" itu siapa
         standalone_q = rewrite_query(question, history)
         
         # 2. Retrieval pakai Query yang sudah diperjelas
-        # Kita juga perluas lagi (expand) untuk menangkap keyword tambahan
         search_q = standalone_q
         if any(x in search_q.lower() for x in ["siapa", "tokoh", "sifat"]):
             search_q += " deskripsi karakter peran asal usul"
@@ -205,7 +208,7 @@ def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_
         best_chunks = retrieved_data[:top_k]
 
         # 3. Generate Answer
-        prompt = build_prompt(standalone_q, best_chunks) # Pakai standalone_q di prompt
+        prompt = build_prompt(standalone_q, best_chunks)
         raw_response = generate_with_gemini(prompt)
 
         # 4. Fallback jika blocked

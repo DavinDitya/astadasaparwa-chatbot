@@ -1,12 +1,10 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
 fastapi
 uvicorn[standard]
 sqlalchemy
 pymysql
-sentence-transformers
+cryptography
 faiss-cpu
 numpy
 python-dotenv
-google-generativeai
+google-genai
 requests

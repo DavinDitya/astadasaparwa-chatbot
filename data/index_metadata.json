@@ -1,4 +1,5 @@
 {
-  "embed_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-  "num_chunks": 12143
+  "embed_model": "gemini-embedding-001",
+  "num_chunks": 12152,
+  "vector_dimension": 3072
 }
