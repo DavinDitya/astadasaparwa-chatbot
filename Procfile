@@ -1,1 +1,1 @@
-web: bash start.sh
+web: python download_lfs.py && uvicorn main:app --host 0.0.0.0 --port $PORT
