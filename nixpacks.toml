@@ -1,7 +1,0 @@
-[phases.build]
-cmds = [
-  "echo '🚀 Memulai Bypass Unduhan Database AI dari GitHub...'",
-  "curl -L -o data/faiss_index.bin https://github.com/DavinDitya/astadasaparwa-chatbot/raw/main/data/faiss_index.bin",
-  "curl -L -o data/parwa_vectors.npy https://github.com/DavinDitya/astadasaparwa-chatbot/raw/main/data/parwa_vectors.npy",
-  "echo '✅ Database berhasil diunduh paksa!'"
-]
