@@ -80,23 +80,37 @@ def rewrite_query(question: str, history: list) -> str:
         content = h.get('content', '')
         history_str += f"{role}: {content}\n"
 
+    # PROMPT BARU: Jauh lebih galak dan tegas!
     prompt = f"""
-    Tugas: Tulis ulang pertanyaan terakhir User agar menjadi kalimat lengkap dan berdiri sendiri (Standalone Question).
-    Gunakan konteks dari Percakapan Sebelumnya untuk memperjelas subjek (dia/nya/mereka).
-    JANGAN MENJAWAB PERTANYAANNYA. HANYA TULIS ULANG PERTANYAANNYA.
+    Tugasmu HANYA menulis ulang pertanyaan terakhir User agar menjadi kalimat lengkap dan berdiri sendiri (Standalone Question) berdasarkan konteks percakapan.
+    
+    ATURAN MUTLAK:
+    1. Ganti kata ganti (dia, -nya, mereka, itu) dengan nama tokoh/subjek yang sedang dibicarakan sebelumnya.
+    2. DILARANG menjawab pertanyaannya.
+    3. DILARANG menggunakan kata pengantar (seperti: "Siap", "Baik", "Tentu", "Ini pertanyaannya").
+    4. Jika pertanyaan sudah jelas tanpa perlu diubah, kembalikan saja pertanyaan aslinya secara utuh.
     
     Percakapan Sebelumnya:
     {history_str}
     
     Pertanyaan User Saat Ini: {question}
     
-    Standalone Question (Bahasa Indonesia):
+    Standalone Question:
     """
     
     rewritten = generate_with_gemini(prompt, max_tokens=100)
     if rewritten:
-        print(f"🔄 Rewritten Query: '{question}' -> '{rewritten}'")
-        return rewritten.strip()
+        # Bersihkan jika AI masih bandel menambahkan label
+        cleaned = rewritten.replace("Standalone Question:", "").replace("**", "").replace('"', '').strip()
+        
+        # Mencegah AI menjawab "Siap" atau "Baik"
+        if len(cleaned) < 5 or cleaned.lower() in ["siap", "baik", "oke", "ya", "mengerti"]:
+            print(f"⚠️ Rewriter ngaco ('{cleaned}'). Pakai query asli.")
+            return question
+            
+        print(f"🔄 Rewritten Query: '{question}' -> '{cleaned}'")
+        return cleaned
+
     return question
 
 # -------------------------
