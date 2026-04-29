@@ -9,21 +9,21 @@ from google.genai import types
 load_dotenv()
 
 # 1. Ambil gabungan API Keys dari .env
-keys_string = os.getenv("GEMINI_API_KEYS")
+keys_string = os.getenv("GEMINI_API_KEY")
 if not keys_string:
-    raise RuntimeError("❌ GEMINI_API_KEYS tidak ditemukan. Pastikan sudah diset di .env dengan pemisah koma.")
+    raise RuntimeError("❌ GEMINI_API_KEY tidak ditemukan. Pastikan sudah diset di .env dengan pemisah koma.")
 
 # 2. Pecah string menjadi list (daftar) kunci
-API_KEYS = [key.strip() for key in keys_string.split(",") if key.strip()]
+API_KEY = [key.strip() for key in keys_string.split(",") if key.strip()]
 
-if not API_KEYS:
+if not API_KEY:
     raise RuntimeError("❌ Daftar API Key kosong! Periksa format di .env")
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").replace("models/", "")
 
 def get_random_client():
     """Mengambil satu API Key secara acak dan mengembalikan instance Client baru"""
-    selected_key = random.choice(API_KEYS)
+    selected_key = random.choice(API_KEY)
     # Opsional: Print sebagian kecil key untuk memastikan rotasi berjalan di log Railway
     print(f"🔄 Menggunakan API Key berakhiran: ...{selected_key[-4:]}")
     return genai.Client(api_key=selected_key)
