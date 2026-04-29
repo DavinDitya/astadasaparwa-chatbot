@@ -14,16 +14,22 @@ if not keys_string:
     raise RuntimeError("❌ GEMINI_API_KEY tidak ditemukan. Pastikan sudah diset di .env dengan pemisah koma.")
 
 # 2. Pecah string menjadi list (daftar) kunci
-API_KEY = [key.strip() for key in keys_string.split(",") if key.strip()]
+API_KEY_LIST = [key.strip() for key in keys_string.split(",") if key.strip()]
 
-if not API_KEY:
+if not API_KEY_LIST:
     raise RuntimeError("❌ Daftar API Key kosong! Periksa format di .env")
+
+# --- [KUNCI PERBAIKAN] ---
+# Kita timpa variabel GEMINI_API_KEY di sistem dengan 1 kunci pertama saja.
+# Ini agar file RAG/Embedding yang otomatis membaca os.environ tidak error akibat koma.
+os.environ["GEMINI_API_KEY"] = API_KEY_LIST[0]
+# -------------------------
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").replace("models/", "")
 
 def get_random_client():
     """Mengambil satu API Key secara acak dan mengembalikan instance Client baru"""
-    selected_key = random.choice(API_KEY)
+    selected_key = random.choice(API_KEY_LIST)
     # Opsional: Print sebagian kecil key untuk memastikan rotasi berjalan di log Railway
     print(f"🔄 Menggunakan API Key berakhiran: ...{selected_key[-4:]}")
     return genai.Client(api_key=selected_key)
@@ -76,9 +82,9 @@ def generate_with_gemini(prompt: str, max_tokens: int = 4096, temperature: float
             error_msg = str(e)
             
             # Jika Error 503 (Sibuk) ATAU 429 (Terkena Limit)
-            if "503" in error_msg or "Unavailable" in error_msg or "429" in error_msg or "Quota" in error_msg:
+            if "503" in error_msg or "Unavailable" in error_msg or "429" in error_msg or "Quota" in error_msg or "INVALID_ARGUMENT" in error_msg:
                 if attempt < max_retries - 1:
-                    print(f"⚠️ Gemini Limit/Sibuk. Mengganti API Key & menunggu 2 detik... (Percobaan {attempt + 1}/{max_retries})")
+                    print(f"⚠️ Gemini Error/Sibuk. Mengganti API Key & menunggu 2 detik... (Percobaan {attempt + 1}/{max_retries})")
                     time.sleep(2)
                     continue # Putar ulang loop, dan dia otomatis akan mengacak kunci baru!
             
