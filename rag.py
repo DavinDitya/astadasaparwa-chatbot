@@ -123,23 +123,27 @@ def build_context_text(retrieved: list) -> str:
 # -------------------------
 # 3. Prompting (Ditambah Logika Mode)
 # -------------------------
+# -------------------------
+# 3. Prompting (Ditambah Logika Mode)
+# -------------------------
 def build_prompt(question: str, retrieved_chunks: list, mode: str) -> str:
     context_str = build_context_text(retrieved_chunks)
     
-    # [BARU] Logika instruksi berdasarkan pilihan user
     if mode == "singkat":
-        instruksi_panjang = "Jawablah dengan SINGKAT, PADAT, dan JELAS (maksimal 2-3 kalimat saja) langsung pada intinya."
+        instruksi_panjang = "Berikan rangkuman dalam 1 paragraf utuh yang jelas dan padat. Pastikan penjelasanmu selesai sempurna dan diakhiri dengan tanda titik."
     else:
         instruksi_panjang = "Jawablah dengan SANGAT DETAIL dan PANJANG. Ceritakan latar belakang, tokoh yang terlibat, dan akhir ceritanya secara runut."
 
+    # [PERBAIKAN FATAL] Aturan nomor 3 diubah agar 100% terikat pada database lokal
+    # dan ditambahkan penegasan terjemahan Inggris ke Indonesia
     prompt = f"""
     Anda adalah 'ADP AI' (Asisten Asta Dasa Parwa).
     
     ATURAN JAWAB:
-    1. JAWAB LANGSUNG ke inti pertanyaan.
-    2. DILARANG KERAS menggunakan kata: "Berdasarkan teks", "Teks menyebutkan", atau "Menurut kutipan".
-    3. Jika informasi tidak ada di teks, gunakan pengetahuan umum tentang Mahabharata.
-    4. Gunakan Bahasa Indonesia yang natural dan bercerita.
+    1. JAWAB LANGSUNG ke inti pertanyaan HANYA berdasarkan DATA REFERENSI di bawah ini.
+    2. DILARANG KERAS menggunakan kata awalan seperti: "Berdasarkan teks", "Teks menyebutkan", atau "Menurut kutipan".
+    3. [SANGAT PENTING] Jika informasi TIDAK ADA di dalam DATA REFERENSI, DILARANG KERAS mengarang atau menggunakan pengetahuan umum dari luar. Anda wajib menjawab: "Maaf, informasi mengenai hal tersebut tidak ditemukan di dalam naskah Asta Dasa Parwa yang saya miliki saat ini."
+    4. DATA REFERENSI yang diberikan berbahasa Inggris, namun Anda WAJIB menjawab dengan menerjemahkannya ke dalam Bahasa Indonesia yang natural, bercerita, dan mudah dipahami.
     5. {instruksi_panjang}
     
     DATA REFERENSI:
@@ -180,9 +184,9 @@ def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_
         # 4. Fallback jika gagal (503 Error)
         if raw_response is None:
             print("⚠️ Fallback Mode Aktif: Gemini Error 503")
-            # Coba pancing sekali lagi dengan prompt super simpel, siapa tau servernya sudah lowong
-            fallback_prompt = f"Ceritakan secara singkat tentang {question} di Mahabharata."
-            raw_response = generate_with_gemini(fallback_prompt, max_tokens=150)
+            # [PERBAIKAN] Prompt diperjelas dan max_tokens dinaikkan agar aman
+            fallback_prompt = f"Berikan 1 paragraf penjelasan yang utuh dan selesai tentang {question} dalam epik Mahabharata."
+            raw_response = generate_with_gemini(fallback_prompt, max_tokens=800)
 
         final_answer = clean_markdown(raw_response) if raw_response else "Maaf, server sedang sibuk (Error 503). Mohon tunggu beberapa detik lalu coba lagi."
         
