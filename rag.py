@@ -121,12 +121,9 @@ def build_context_text(retrieved: list) -> str:
     return "\n---\n".join(texts)
 
 # -------------------------
-# 3. Prompting (Ditambah Logika Mode)
+# 3. Prompting (Ditambah Logika Mode & History)
 # -------------------------
-# -------------------------
-# 3. Prompting (Ditambah Logika Mode)
-# -------------------------
-def build_prompt(question: str, retrieved_chunks: list, mode: str) -> str:
+def build_prompt(question: str, retrieved_chunks: list, mode: str, history: list) -> str:
     context_str = build_context_text(retrieved_chunks)
     
     if mode == "singkat":
@@ -134,8 +131,18 @@ def build_prompt(question: str, retrieved_chunks: list, mode: str) -> str:
     else:
         instruksi_panjang = "Jawablah dengan SANGAT DETAIL dan PANJANG. Ceritakan latar belakang, tokoh yang terlibat, dan akhir ceritanya secara runut."
 
-    # [PERBAIKAN FATAL] Aturan nomor 3 diubah agar 100% terikat pada database lokal
-    # dan ditambahkan penegasan terjemahan Inggris ke Indonesia
+    # [BARU] Merangkai riwayat percakapan agar AI paham konteks "dia", "itu", dll.
+    history_text = ""
+    if history:
+        history_text = "RIWAYAT PERCAKAPAN SEBELUMNYA:\n"
+        for msg in history[-4:]: # Ambil 4 chat terakhir saja agar tidak membebani token
+            role = msg.get("role", "user")
+            nama_role = "Pengguna" if role == "user" else "ADP AI"
+            # Menangani berbagai format key history dari frontend
+            teks = msg.get("text", msg.get("message", msg.get("content", "")))
+            history_text += f"{nama_role}: {teks}\n"
+        history_text += "\n"
+
     prompt = f"""
     Anda adalah 'ADP AI' (Asisten Asta Dasa Parwa).
     
@@ -146,10 +153,10 @@ def build_prompt(question: str, retrieved_chunks: list, mode: str) -> str:
     4. DATA REFERENSI yang diberikan berbahasa Inggris, namun Anda WAJIB menjawab dengan menerjemahkannya ke dalam Bahasa Indonesia yang natural, bercerita, dan mudah dipahami.
     5. {instruksi_panjang}
     
-    DATA REFERENSI:
+    {history_text}DATA REFERENSI:
     {context_str}
 
-    PERTANYAAN: {question}
+    PERTANYAAN SAAT INI: {question}
 
     JAWABAN:
     """
@@ -162,8 +169,21 @@ def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_
     try:
         load_store()
         
-        # 1. Langsung pakai pertanyaan asli (Lewati Rewriter yang bikin lambat!)
+        # 1. Optimasi Pencarian Multi-turn (Tanpa API Rewriter)
         search_q = question
+        if history:
+            # Cari pesan pengguna yang paling terakhir
+            last_user_msg = ""
+            for msg in reversed(history):
+                if msg.get("role", "user") == "user":
+                    last_user_msg = msg.get("text", msg.get("message", msg.get("content", "")))
+                    break
+            
+            # Jika pertanyaan saat ini pakai kata ganti, gabungkan dengan pertanyaan sebelumnya
+            if any(kata in question.lower() for kata in ["dia", "ia", "tersebut", "itu", "ini"]):
+                search_q = f"{last_user_msg} {question}"
+        
+        # Tambahkan keyword agar pencarian lebih akurat
         if any(x in search_q.lower() for x in ["siapa", "tokoh", "sifat"]):
             search_q += " deskripsi karakter peran asal usul"
             
@@ -177,15 +197,14 @@ def answer_question(question: str, history: list = [], top_k: int = DEFAULT_TOP_
         
         best_chunks = retrieved_data[:top_k]
 
-        # 3. Generate Answer dengan Mode (Singkat/Detail)
-        prompt = build_prompt(question, best_chunks, mode)
+        # 3. Generate Answer dengan Mode & History
+        prompt = build_prompt(question, best_chunks, mode, history)
         raw_response = generate_with_gemini(prompt)
 
         # 4. Fallback jika gagal (503 Error)
         if raw_response is None:
             print("⚠️ Fallback Mode Aktif: Gemini Error 503")
-            # [PERBAIKAN] Prompt diperjelas dan max_tokens dinaikkan agar aman
-            fallback_prompt = f"Berikan 1 paragraf penjelasan yang utuh dan selesai tentang {question} dalam epik Mahabharata."
+            fallback_prompt = f"Berdasarkan percakapan sebelumnya, berikan penjelasan utuh tentang {question} dalam epik Mahabharata."
             raw_response = generate_with_gemini(fallback_prompt, max_tokens=800)
 
         final_answer = clean_markdown(raw_response) if raw_response else "Maaf, server sedang sibuk (Error 503). Mohon tunggu beberapa detik lalu coba lagi."
