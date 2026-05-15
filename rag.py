@@ -26,8 +26,8 @@ _chunks = None
 _vectors = None
 _book_names = None
 
-DEFAULT_TOP_K = 10 
-CONTEXT_CHAR_LIMIT = 8000 
+DEFAULT_TOP_K = 3 
+CONTEXT_CHAR_LIMIT = 4000 
 
 # -------------------------
 # 1. Utilities & Cleaning
@@ -127,38 +127,30 @@ def build_prompt(question: str, retrieved_chunks: list, mode: str, history: list
     context_str = build_context_text(retrieved_chunks)
     
     if mode == "singkat":
-        instruksi_panjang = "Berikan rangkuman dalam 1 paragraf utuh yang jelas dan padat. Pastikan penjelasanmu selesai sempurna dan diakhiri dengan tanda titik."
+        instruksi_panjang = "Jawab ringkas dalam 1 paragraf saja. Pastikan kalimatmu selesai dan diakhiri tanda titik."
     else:
-        instruksi_panjang = "Jawablah dengan SANGAT DETAIL dan PANJANG. Ceritakan latar belakang, tokoh yang terlibat, dan akhir ceritanya secara runut."
+        instruksi_panjang = "Jawab dengan detail dan utuh. Selesaikan seluruh penjelasanmu dengan sempurna, DILARANG KERAS memotong kalimat di akhir, dan pastikan diakhiri dengan tanda titik."
 
-    # [BARU] Merangkai riwayat percakapan agar AI paham konteks "dia", "itu", dll.
     history_text = ""
     if history:
-        history_text = "RIWAYAT PERCAKAPAN SEBELUMNYA:\n"
-        for msg in history[-4:]: # Ambil 4 chat terakhir saja agar tidak membebani token
-            role = msg.get("role", "user")
-            nama_role = "Pengguna" if role == "user" else "ADP AI"
-            # Menangani berbagai format key history dari frontend
+        history_text = "Riwayat:\n"
+        for msg in history[-2:]: # [DIUBAH] Cukup ambil 2 riwayat terakhir, bukan 4.
+            role = "User" if msg.get("role", "user") == "user" else "AI"
             teks = msg.get("text", msg.get("message", msg.get("content", "")))
-            history_text += f"{nama_role}: {teks}\n"
+            history_text += f"{role}: {teks}\n"
         history_text += "\n"
 
+    # [DIUBAH] Prompt dibuat jauh lebih ringkas agar token lebih kecil
     prompt = f"""
-    Anda adalah 'ADP AI' (Asisten Asta Dasa Parwa).
+    Anda adalah Asisten Asta Dasa Parwa.
+    Tugas: Jawab pertanyaan BERDASARKAN KONTEKS BAHASA INGGRIS di bawah, terjemahkan ke Bahasa Indonesia yang baik.
+    Aturan: {instruksi_panjang} Jika info tidak ada di Konteks, jawab: "Maaf, informasi tidak ditemukan dalam naskah."
     
-    ATURAN JAWAB:
-    1. JAWAB LANGSUNG ke inti pertanyaan HANYA berdasarkan DATA REFERENSI di bawah ini.
-    2. DILARANG KERAS menggunakan kata awalan seperti: "Berdasarkan teks", "Teks menyebutkan", atau "Menurut kutipan".
-    3. [SANGAT PENTING] Jika informasi TIDAK ADA di dalam DATA REFERENSI, DILARANG KERAS mengarang atau menggunakan pengetahuan umum dari luar. Anda wajib menjawab: "Maaf, informasi mengenai hal tersebut tidak ditemukan di dalam naskah Asta Dasa Parwa yang saya miliki saat ini."
-    4. DATA REFERENSI yang diberikan berbahasa Inggris, namun Anda WAJIB menjawab dengan menerjemahkannya ke dalam Bahasa Indonesia yang natural, bercerita, dan mudah dipahami.
-    5. {instruksi_panjang}
-    
-    {history_text}DATA REFERENSI:
+    {history_text}Konteks:
     {context_str}
 
-    PERTANYAAN SAAT INI: {question}
-
-    JAWABAN:
+    Pertanyaan: {question}
+    Jawaban:
     """
     return prompt.strip()
 

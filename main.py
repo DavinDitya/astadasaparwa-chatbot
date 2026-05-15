@@ -14,9 +14,8 @@ app = FastAPI(title="Asta Dasa Chatbot (RAG with Gemini)")
 class AskRequest(BaseModel):
     question: str
     history: List[Dict[str, str]] = []
-    top_k: int = 10
-    # [BARU] Tambahkan mode panjang/singkat
-    mode: str = "detail" # Defaultnya "detail", bisa diisi "singkat" dari Android
+    top_k: int = 3
+    mode: str = "detail"
 
 @app.on_event("startup")
 async def startup_event():
